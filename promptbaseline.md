@@ -1,10 +1,12 @@
 Нужно написать Python pipeline для соревнования по прогнозу target_2h на 10 будущих получасовых горизонтов для каждого route_id.
 
 Данные:
+
 - train_team_track.parquet
 - test_team_track.parquet
 
 Колонки train:
+
 - office_from_id
 - route_id
 - timestamp
@@ -12,6 +14,7 @@
 - target_2h
 
 Колонки test:
+
 - id
 - office_from_id
 - route_id
@@ -20,9 +23,11 @@
 Нужно сделать strong baseline на LightGBM.
 
 Требования к решению:
+
 1. Считать train/test parquet.
 2. Отсортировать train по route_id, timestamp.
 3. Построить признаки:
+
    - status_1..status_8
    - status_sum, status_mean, status_max, status_min, status_nonzero_cnt, status_std
    - доли каждого status_i от status_sum
@@ -34,23 +39,23 @@
    - diff features по target и status_sum
    - office-level aggregate features: сумма target_2h и status_sum по office_from_id,timestamp, плюс их лаги и rolling
    - route share features относительно склада
-
 4. Сделать direct forecasting:
+
    - для каждого h от 1 до 10 создать target_h = target_2h shifted by -h внутри route_id
    - обучить отдельную модель LightGBMRegressor для каждого h
-
 5. Валидация:
+
    - time-based split
    - valid = последние 7 дней train
    - никаких random split / KFold / shuffle
-
 6. Метрика:
+
    - реализовать WAPE + Relative Bias:
      wape = sum(abs(y_pred - y_true)) / sum(y_true)
      rbias = abs(sum(y_pred) / sum(y_true) - 1)
      score = wape + rbias
-
 7. Обучение:
+
    - objective='l1'
    - n_estimators=1500
    - learning_rate=0.03
@@ -64,38 +69,39 @@
    - random_state=42
    - n_jobs=-1
    - early stopping по validation
-
 8. После обучения:
+
    - получить предсказания на validation по всем 10 горизонтам
    - подобрать глобальный scale alpha в диапазоне [0.90, 1.10] с маленьким шагом, чтобы минимизировать WAPE + Relative Bias
    - сохранить лучший alpha
    - финальные предсказания всегда clip(pred, 0, None)
    - потом умножать на alpha
-
 9. Инференс на test:
+
    - использовать только последнюю доступную train-историю по каждому route_id
    - для каждого горизонта h=1..10 собрать фичи с соответствующим будущим target_timestamp
    - применить model_h
    - получить 10 предсказаний на каждый route_id
    - смёржить с test по route_id,timestamp
    - сформировать submission.csv с колонками:
-       id
-       y_pred
-
+     id
+     y_pred
 10. Дополнительно:
-   - вывести feature importance для каждой модели
-   - сохранить модели в папку models/
-   - сохранить validation score по каждому горизонту и общий score
-   - код должен быть разбит на функции:
-       load_data
-       build_features
-       make_targets
-       time_split
-       train_one_horizon
-       tune_global_alpha
-       predict_test
-       make_submission
+
+- вывести feature importance для каждой модели
+- сохранить модели в папку models/
+- сохранить validation score по каждому горизонту и общий score
+- код должен быть разбит на функции:
+  load_data
+  build_features
+  make_targets
+  time_split
+  train_one_horizon
+  tune_global_alpha
+  predict_test
+  make_submission
 
 11. Сделать CLI:
-   - python train.py
-   - python infer.py
+
+- python train.py
+- python infer.py

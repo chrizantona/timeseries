@@ -1,37 +1,44 @@
 # `target_2h` LightGBM Baseline
 
-Полностью рабочий baseline для соревнования по прогнозу `target_2h`.
+Обновленный direct LightGBM baseline для panel time series forecasting по `target_2h`.
 
-## Что это за решение
+## Что изменено
 
-Решение использует direct forecasting для panel time series по `route_id`:
+Теперь в пайплайне есть:
 
-- обучаются `10` отдельных `LightGBMRegressor` для горизонтов `h=1..10`
-- target для каждого горизонта строится как `shift(-h)` внутри `route_id`
-- validation делается строго по времени: последние `7` дней
-- после валидации подбирается глобальный `alpha` под метрику `WAPE + |Relative Bias|`
-- предсказания всегда обрезаются в `0+`
+- отдельная модель на каждый горизонт `h=1..10`
+- categorical handling для `route_id` и `office_from_id`
+- horizon-aligned seasonal lag features без future leakage
+- route-level weekly same-slot priors
+- office-level same-slot aggregates и share features
+- per-horizon calibration по validation
+- blend из `LightGBM + daily naive + weekly naive`
+- логирование `overall / per-horizon` метрик, feature importance и runtime
 
-Решение не использует:
+## Какие признаки используются
 
-- future leakage
-- random split
-- recursive forecast
+Базовые признаки:
 
-## Какие фичи используются
+- `status_1..status_8`
+- агрегаты по статусам
+- calendar features по `source_timestamp`
+- future calendar features по `target timestamp = source_timestamp + h * 30min`
+- route history lags / rolling stats по `target_2h`
+- route history lags / rolling stats по `status_sum`
+- office-level агрегаты по `office_from_id`
 
-- сырые `status_1..status_8`
-- агрегаты по статусам:
-  `status_sum`, `status_mean`, `status_max`, `status_min`, `status_nonzero_cnt`, `status_std`
-- доли каждого `status_i` внутри `status_sum`
-- calendar features для текущего `timestamp`
-- future calendar features для `target timestamp = timestamp + 30min * h`
-- лаги `target_2h` по `route_id`
-- rolling mean/std/min/max по `target_2h` только из прошлого через `shift(1)`
-- лаги и rolling по `status_sum`
-- diff features по `target_2h` и `status_sum`
-- office-level aggregates по `office_from_id`
-- route share features относительно офиса
+Новые horizon-aligned признаки:
+
+- `target_same_slot_day`, `target_same_slot_2day`, `target_same_slot_week`, `target_same_slot_2week`
+- `same_slot_day_vs_week_diff`, `same_slot_day_vs_week_ratio`, `same_slot_week_vs_2week_diff`
+- `route_weekslot_mean_2`, `route_weekslot_mean_4`, `route_weekslot_median_4`, `route_weekslot_std_4`
+- `office_same_slot_day`, `office_same_slot_week`, `office_weekslot_mean_2`, `office_weekslot_mean_4`
+- `route_share_day`, `route_share_week`, `route_share_weekslot_mean`
+
+Naive baseline для blend берется из:
+
+- `daily_naive = target_same_slot_day`
+- `weekly_naive = target_same_slot_week`
 
 ## Структура репозитория
 
@@ -39,67 +46,80 @@
 .
 ├── train.py
 ├── infer.py
+├── bassboost.ipynb
+├── baselineupdate.md
 ├── requirements.txt
-├── README.md
 └── src
     ├── features.py
     ├── metrics.py
     └── utils.py
 ```
 
-## Файлы
+## Как запускать
 
-- `train.py` обучает модели, сохраняет артефакты и считает validation
-- `infer.py` загружает обученные модели и собирает `submission.csv`
-- `src/features.py` строит все признаки
-- `src/metrics.py` реализует `WAPE + |Relative Bias|`
-- `src/utils.py` содержит загрузку parquet, split, калибровку и сбор сабмита
-
-## Важная деталь про test
-
-В фактическом `test_team_track.parquet` нет `office_from_id`.
-В коде этот столбец восстанавливается по стабильной связи `route_id -> office_from_id` из train.
-
-## Как получить submission
-
-1. Положить рядом с кодом файлы:
-
-- `train_team_track.parquet`
-- `test_team_track.parquet`
-
-2. Установить зависимости:
+Установить зависимости:
 
 ```bash
 python -m pip install -r requirements.txt
 ```
 
-3. Обучить baseline:
+Финальная конфигурация со всеми улучшениями:
 
 ```bash
-python train.py
+python train.py \
+  --models-dir models/final \
+  --outputs-dir outputs/final \
+  --submission-path outputs/final/submission_from_train.csv
 ```
 
-4. Собрать финальный сабмит:
+Отдельный инференс по сохраненным моделям:
 
 ```bash
-python infer.py --submission-path submission.csv
+python infer.py \
+  --models-dir models/final \
+  --submission-path submission.csv
 ```
 
-5. Загружать файл:
+## Поэтапные эксперименты
 
-```text
-submission.csv
+`train.py` поддерживает staged ablation через флаги:
+
+- `--disable-aligned-lags`
+- `--disable-route-priors`
+- `--disable-office-features`
+- `--disable-share-features`
+- `--disable-per-horizon-alpha`
+- `--disable-blend`
+- `--disable-categorical-features`
+
+Пример первого шага только с categorical ids:
+
+```bash
+python train.py \
+  --models-dir models/01_categorical \
+  --outputs-dir outputs/01_categorical \
+  --submission-path outputs/01_categorical/submission_from_train.csv \
+  --disable-aligned-lags \
+  --disable-route-priors \
+  --disable-office-features \
+  --disable-share-features \
+  --disable-per-horizon-alpha \
+  --disable-blend
 ```
 
-## Что появится после обучения
+Готовый Kaggle-ноутбук `[bassboost.ipynb](/Users/chrizantona/timeseries/bassboost.ipynb)` уже содержит эту лестницу стадий и по умолчанию запускает только финальный stage. Если хочешь пройти все этапы, в ноутбуке достаточно заменить `EXPERIMENTS_TO_RUN = STAGE_SEQUENCE[-1:]` на `EXPERIMENTS_TO_RUN = STAGE_SEQUENCE`.
 
-- `models/model_h1.joblib` ... `models/model_h10.joblib`
-- `models/artifacts.joblib`
-- `outputs/feature_importance_h*.csv`
-- `outputs/validation_predictions.parquet`
-- `outputs/validation_scores.json`
-- `outputs/submission_from_train.csv`
+## Что сохраняется после обучения
 
-После отдельного инференса появится финальный:
+- `models/.../model_h1.joblib` ... `model_h10.joblib`
+- `models/.../artifacts.joblib`
+- `outputs/.../feature_importance_h*.csv`
+- `outputs/.../validation_predictions.parquet`
+- `outputs/.../per_horizon_metrics.csv`
+- `outputs/.../validation_scores.json`
+- `outputs/.../submission_from_train.csv`
 
-- `submission.csv`
+## Важная деталь про test
+
+В фактическом `test_team_track.parquet` нет `office_from_id`.
+Он восстанавливается из стабильной связи `route_id -> office_from_id`, найденной в train.

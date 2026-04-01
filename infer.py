@@ -11,8 +11,13 @@ import joblib
 import numpy as np
 import pandas as pd
 
-from src.features import build_features, build_model_matrix
-from src.utils import clip_and_scale, load_data, make_submission
+from src.features import (
+    build_features,
+    build_horizon_feature_frame,
+    build_model_matrix,
+    build_office_history_frame,
+)
+from src.utils import clip_and_scale, clip_predictions, load_data, make_submission
 
 
 def parse_args() -> argparse.Namespace:
@@ -33,25 +38,32 @@ def predict_test(
 ) -> pd.DataFrame:
     models_dir = Path(models_dir)
     base_feature_cols = list(artifact["base_feature_cols"])
+    horizon_feature_cols = list(artifact.get("horizon_feature_cols", []))
+    categorical_features = list(artifact.get("categorical_features", []))
     horizons = sorted(int(h) for h in artifact["horizons"])
-    alpha = float(artifact["alpha"])
     freq_minutes = int(artifact["freq_minutes"])
+    target_col = str(artifact["target_col"])
+    experiment_config = dict(artifact.get("experiment_config", {}))
+    per_horizon_postprocess = dict(artifact.get("per_horizon_postprocess", {}))
+
+    office_history_frame = build_office_history_frame(train_feature_df, target_col=target_col)
 
     last_history = (
         train_feature_df.sort_values(["route_id", "source_timestamp"])
         .groupby("route_id", sort=False)
         .tail(1)
-        .reset_index(drop=True)
+        .copy()
     )
-
-    history_feature_cols = [
+    history_base_cols = [
         "route_id",
         "office_from_id",
         "source_timestamp",
         *[col for col in base_feature_cols if col not in {"route_id", "office_from_id"}],
     ]
+    base_lookup = last_history[history_base_cols].copy()
+
     test_frame = test_df.merge(
-        last_history[history_feature_cols],
+        base_lookup,
         on=["route_id", "office_from_id"],
         how="left",
         validate="many_to_one",
@@ -67,7 +79,7 @@ def predict_test(
 
     rounded_horizon = np.rint(horizon_float).astype(np.int16)
     if not np.allclose(horizon_float.to_numpy(), rounded_horizon.astype(np.float32), atol=1e-6):
-        raise ValueError("Test timestamps are not aligned to the expected 30-minute direct horizons.")
+        raise ValueError("Test timestamps are not aligned to the expected direct horizons.")
 
     test_frame["horizon"] = rounded_horizon
     unknown_horizons = sorted(set(test_frame["horizon"].unique()) - set(horizons))
@@ -80,16 +92,71 @@ def predict_test(
         model = joblib.load(model_path)
 
         horizon_slice = test_frame[test_frame["horizon"] == horizon].copy()
+        if horizon_slice.empty:
+            continue
+
+        if horizon_feature_cols:
+            horizon_feature_frame = build_horizon_feature_frame(
+                df=train_feature_df,
+                office_history_frame=office_history_frame,
+                horizon=horizon,
+                target_col=target_col,
+                use_aligned_lags=bool(experiment_config.get("use_aligned_lags", False)),
+                use_route_priors=bool(experiment_config.get("use_route_priors", False)),
+                use_office_features=bool(experiment_config.get("use_office_features", False)),
+                use_share_features=bool(experiment_config.get("use_share_features", False)),
+            )
+            extra_lookup = pd.concat(
+                [
+                    last_history[["route_id", "office_from_id"]].reset_index(drop=True),
+                    horizon_feature_frame.loc[last_history.index, horizon_feature_cols].reset_index(drop=True),
+                ],
+                axis=1,
+            )
+            horizon_slice = horizon_slice.merge(
+                extra_lookup,
+                on=["route_id", "office_from_id"],
+                how="left",
+                validate="many_to_one",
+            )
+
         X_test = build_model_matrix(
             horizon_slice,
             base_feature_cols=base_feature_cols,
             horizon=horizon,
+            horizon_feature_cols=horizon_feature_cols,
+            categorical_features=categorical_features,
             source_ts_col="source_timestamp",
             future_ts_col="timestamp",
             freq_minutes=freq_minutes,
         )
-        raw_pred = model.predict(X_test, num_iteration=getattr(model, "best_iteration_", None))
-        horizon_slice["y_pred"] = clip_and_scale(raw_pred, alpha=alpha)
+
+        raw_pred = np.asarray(
+            model.predict(X_test, num_iteration=getattr(model, "best_iteration_", None)),
+            dtype=np.float32,
+        )
+
+        postprocess = dict(per_horizon_postprocess.get(str(horizon), {}))
+        pred_model = clip_and_scale(raw_pred, float(postprocess.get("alpha_model", 1.0)))
+        pred_final = pred_model
+
+        if bool(experiment_config.get("use_blend", False)):
+            daily_naive = clip_predictions(np.nan_to_num(horizon_slice["target_same_slot_day"], nan=0.0))
+            weekly_naive = clip_predictions(np.nan_to_num(horizon_slice["target_same_slot_week"], nan=0.0))
+            blend_weights = dict(
+                postprocess.get(
+                    "blend_weights",
+                    {"w_lgbm": 1.0, "w_daily": 0.0, "w_weekly": 0.0},
+                )
+            )
+            blend_raw = (
+                pred_model * np.float32(blend_weights.get("w_lgbm", 1.0))
+                + daily_naive * np.float32(blend_weights.get("w_daily", 0.0))
+                + weekly_naive * np.float32(blend_weights.get("w_weekly", 0.0))
+            ).astype(np.float32)
+            pred_final = clip_and_scale(blend_raw, float(postprocess.get("blend_alpha", 1.0)))
+
+        horizon_slice["y_pred"] = pred_final
         prediction_parts.append(horizon_slice[["id", "route_id", "timestamp", "y_pred"]])
 
     prediction_df = pd.concat(prediction_parts, ignore_index=True)

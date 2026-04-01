@@ -7,12 +7,13 @@ from typing import Any, Iterable
 import numpy as np
 import pandas as pd
 
-from src.metrics import competition_score
+from src.metrics import competition_score, relative_bias, wape
 
 
 TARGET_COL = "target_2h"
 FREQ_MINUTES = 30
 FORECAST_HORIZONS = tuple(range(1, 11))
+EPSILON = 1e-6
 
 
 def ensure_dir(path: str | Path) -> Path:
@@ -49,9 +50,13 @@ def safe_divide(
     return result.astype(np.float32)
 
 
+def clip_predictions(predictions: Iterable[float]) -> np.ndarray:
+    return np.clip(np.asarray(predictions, dtype=np.float32), 0.0, None).astype(np.float32)
+
+
 def clip_and_scale(predictions: Iterable[float], alpha: float) -> np.ndarray:
-    clipped = np.clip(np.asarray(predictions, dtype=np.float32), 0.0, None)
-    return (clipped * np.float32(alpha)).astype(np.float32)
+    scaled = np.asarray(predictions, dtype=np.float32) * np.float32(alpha)
+    return clip_predictions(scaled)
 
 
 def get_status_columns(df: pd.DataFrame) -> list[str]:
@@ -137,7 +142,15 @@ def time_split(
     }
 
 
-def tune_global_alpha(
+def summarize_metrics(y_true: Iterable[float], y_pred: Iterable[float]) -> dict[str, float]:
+    return {
+        "wape": float(wape(y_true, y_pred)),
+        "relative_bias": float(relative_bias(y_true, y_pred)),
+        "score": float(competition_score(y_true, y_pred)),
+    }
+
+
+def tune_alpha(
     y_true: Iterable[float],
     y_pred_raw: Iterable[float],
     alpha_min: float = 0.90,
@@ -160,6 +173,69 @@ def tune_global_alpha(
             best_alpha = float(alpha)
 
     return best_alpha, tried_scores
+
+
+def tune_global_alpha(
+    y_true: Iterable[float],
+    y_pred_raw: Iterable[float],
+    alpha_min: float = 0.90,
+    alpha_max: float = 1.10,
+    alpha_step: float = 0.001,
+) -> tuple[float, list[dict[str, float]]]:
+    return tune_alpha(
+        y_true=y_true,
+        y_pred_raw=y_pred_raw,
+        alpha_min=alpha_min,
+        alpha_max=alpha_max,
+        alpha_step=alpha_step,
+    )
+
+
+def search_blend_weights(
+    y_true: Iterable[float],
+    pred_lgbm: Iterable[float],
+    pred_daily: Iterable[float],
+    pred_weekly: Iterable[float],
+    weight_step: float = 0.05,
+) -> tuple[dict[str, float], dict[str, float]]:
+    if weight_step <= 0 or weight_step > 1:
+        raise ValueError("weight_step must be in the interval (0, 1].")
+
+    grid_size = int(round(1.0 / weight_step))
+    if not np.isclose(grid_size * weight_step, 1.0, atol=1e-8):
+        raise ValueError("weight_step must divide 1.0 exactly, e.g. 0.5, 0.25, 0.2, 0.1, 0.05.")
+
+    y_true_arr = np.asarray(y_true, dtype=np.float32)
+    pred_lgbm_arr = clip_predictions(pred_lgbm)
+    pred_daily_arr = clip_predictions(pred_daily)
+    pred_weekly_arr = clip_predictions(pred_weekly)
+
+    best_weights = {"w_lgbm": 1.0, "w_daily": 0.0, "w_weekly": 0.0}
+    best_metrics = summarize_metrics(y_true_arr, pred_lgbm_arr)
+
+    for lgbm_units in range(grid_size + 1):
+        for daily_units in range(grid_size - lgbm_units + 1):
+            weekly_units = grid_size - lgbm_units - daily_units
+
+            w_lgbm = lgbm_units / grid_size
+            w_daily = daily_units / grid_size
+            w_weekly = weekly_units / grid_size
+
+            blended = (
+                pred_lgbm_arr * np.float32(w_lgbm)
+                + pred_daily_arr * np.float32(w_daily)
+                + pred_weekly_arr * np.float32(w_weekly)
+            ).astype(np.float32)
+            metrics = summarize_metrics(y_true_arr, blended)
+            if metrics["score"] < best_metrics["score"]:
+                best_metrics = metrics
+                best_weights = {
+                    "w_lgbm": float(w_lgbm),
+                    "w_daily": float(w_daily),
+                    "w_weekly": float(w_weekly),
+                }
+
+    return best_weights, best_metrics
 
 
 def make_submission(prediction_df: pd.DataFrame, submission_path: str | Path) -> pd.DataFrame:

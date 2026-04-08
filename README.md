@@ -12,6 +12,7 @@
 
 ## Содержание
 
+- [ML-пайплайн](#ml-пайплайн)
 - [Проблема](#проблема)
 - [Решение](#решение)
 - [Структура проекта](#структура-проекта)
@@ -25,6 +26,119 @@
 - [Технологии](#технологии)
 - [Бизнес-эффект](#бизнес-эффект)
 - [Roadmap](#roadmap)
+
+---
+
+## ML-пайплайн
+
+### Что делает
+
+Direct-прогнозирование `target_2h` по panel time series. Отдельная LightGBM-модель на каждый горизонт `h = 1..10`.
+
+### Что реализовано
+
+- Отдельная модель на каждый горизонт `h = 1..10`
+- Categorical handling для `route_id` и `office_from_id`
+- Horizon-aligned seasonal lag features без future leakage
+- Route-level weekly same-slot priors
+- Office-level same-slot aggregates и share features
+- Per-horizon calibration по validation
+- Blend из `LightGBM + daily naive + weekly naive`
+- Логирование `overall / per-horizon` метрик, feature importance и runtime
+
+### Запуск обучения
+
+Установить зависимости и обучить модели:
+
+```bash
+python -m pip install -r requirements.txt
+
+python train.py \
+  --models-dir models/final \
+  --outputs-dir outputs/final \
+  --submission-path outputs/final/submission_from_train.csv
+```
+
+Отдельный инференс по сохранённым моделям:
+
+```bash
+python infer.py \
+  --models-dir models/final \
+  --submission-path submission.csv
+```
+
+### Признаки
+
+Базовые:
+
+- `status_1..status_8`, агрегаты по статусам
+- Calendar features по `source_timestamp`
+- Future calendar features по `target_timestamp = source_timestamp + h * 30min`
+- Route history lags / rolling stats по `target_2h` и `status_sum`
+- Office-level агрегаты по `office_from_id`
+
+Horizon-aligned (без future leakage):
+
+- `target_same_slot_day`, `target_same_slot_2day`, `target_same_slot_week`, `target_same_slot_2week`
+- `same_slot_day_vs_week_diff`, `same_slot_day_vs_week_ratio`, `same_slot_week_vs_2week_diff`
+- `route_weekslot_mean_2`, `route_weekslot_mean_4`, `route_weekslot_median_4`, `route_weekslot_std_4`
+- `office_same_slot_day`, `office_same_slot_week`, `office_weekslot_mean_2`, `office_weekslot_mean_4`
+- `route_share_day`, `route_share_week`, `route_share_weekslot_mean`
+
+Naive baseline для бленда:
+
+- `daily_naive = target_same_slot_day`
+- `weekly_naive = target_same_slot_week`
+
+### Поэтапные эксперименты (ablation)
+
+`train.py` поддерживает staged ablation через флаги:
+
+| Флаг | Что отключает |
+|---|---|
+| `--disable-aligned-lags` | Horizon-aligned lag features |
+| `--disable-route-priors` | Route-level weekly same-slot priors |
+| `--disable-office-features` | Office-level агрегаты |
+| `--disable-share-features` | Share features |
+| `--disable-per-horizon-alpha` | Per-horizon calibration |
+| `--disable-blend` | Блендинг с naive бейзлайнами |
+| `--disable-categorical-features` | Categorical encoding для `route_id`, `office_from_id` |
+
+Пример первого шага — только categorical ids:
+
+```bash
+python train.py \
+  --models-dir models/01_categorical \
+  --outputs-dir outputs/01_categorical \
+  --submission-path outputs/01_categorical/submission_from_train.csv \
+  --disable-aligned-lags \
+  --disable-route-priors \
+  --disable-office-features \
+  --disable-share-features \
+  --disable-per-horizon-alpha \
+  --disable-blend
+```
+
+Готовый ноутбук `bassboost.ipynb` содержит эту лестницу стадий и по умолчанию запускает только финальный stage. Чтобы прогнать все этапы, заменить `EXPERIMENTS_TO_RUN = STAGE_SEQUENCE[-1:]` на `EXPERIMENTS_TO_RUN = STAGE_SEQUENCE`.
+
+### Что сохраняется после обучения
+
+```text
+models/final/
+  model_h1.joblib ... model_h10.joblib
+  artifacts.joblib
+
+outputs/final/
+  feature_importance_h*.csv
+  validation_predictions.parquet
+  per_horizon_metrics.csv
+  validation_scores.json
+  submission_from_train.csv
+```
+
+### Важная деталь про тестовые данные
+
+В `test_team_track.parquet` нет `office_from_id`. Он восстанавливается из стабильной связи `route_id -> office_from_id`, найденной в train — логика реализована в `infer.py`.
 
 ---
 
@@ -59,7 +173,7 @@
 ## Структура проекта
 
 ```
-service/
+transport-dispatch-service/
 ├── requirements.txt
 ├── .env.example
 ├── docker-compose.yml

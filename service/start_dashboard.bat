@@ -1,0 +1,3 @@
+@echo off
+echo Starting Transport Dispatch Dashboard...
+streamlit run dashboard/streamlit_app.py

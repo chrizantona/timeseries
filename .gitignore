@@ -1,13 +1,36 @@
+# Python
 __pycache__/
 *.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+.venv/
+ENV/
+*.egg-info/
 
-models/
-outputs/
-submission.csv
+# Data files
 *.parquet
-*.joblib
 *.csv
+*.joblib
 *.json
-kaggle_add_data_bundle/
+*.ipynb
 
+# Logs
+*.log
+
+# OS
 .DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Models
+models*/
+out/
+outputs*/
+
+# Keep service
+!service/

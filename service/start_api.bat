@@ -1,0 +1,3 @@
+@echo off
+echo Starting Transport Dispatch API...
+uvicorn src.api.app:app --reload --host 0.0.0.0 --port 8000

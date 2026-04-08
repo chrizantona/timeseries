@@ -219,20 +219,60 @@ transport-dispatch-service/
 
 ---
 
-### Вариант 1: одна команда (рекомендуется)
+### Способ 1: быстрый запуск (Windows)
+
+**Шаг 1.** Клонировать репозиторий:
 
 ```bash
-chmod +x quickstart.sh
-./quickstart.sh
+git clone https://github.com/chrizantona/timeseries.git
+cd timeseries/service
 ```
+
+**Шаг 2.** Открыть два терминала и запустить сервисы:
+
+Терминал 1 — API:
+```bash
+start_api.bat
+```
+
+Терминал 2 — Dashboard:
+```bash
+start_dashboard.bat
+```
+
+**Шаг 3.** Открыть в браузере:
+
+- Dashboard: http://localhost:8501
+- API Docs: http://localhost:8000/docs
 
 ---
 
-### Вариант 2: Docker
+### Способ 2: Docker (рекомендуется)
+
+Не нужно устанавливать зависимости — всё запускается в изолированной среде одной командой.
+
+**Шаг 1.** Установить Docker.
+
+Windows и macOS: скачать [Docker Desktop](https://www.docker.com/products/docker-desktop) и запустить.
+
+Linux:
+```bash
+curl -fsSL https://get.docker.com -o get-docker.sh
+sudo sh get-docker.sh
+```
+
+**Шаг 2.** Запустить:
 
 ```bash
+cd timeseries/service
 docker-compose up --build
 ```
+
+**Шаг 3.** Открыть в браузере:
+
+- Dashboard: http://localhost:8501
+- API: http://localhost:8000
+- API Docs: http://localhost:8000/docs
 
 Остановить:
 
@@ -242,45 +282,78 @@ docker-compose down
 
 ---
 
-### Вариант 3: Windows
+### Способ 3: ручная установка
 
-Открыть два терминала:
+**Шаг 1.** Клонировать репозиторий:
 
 ```bash
-# Терминал 1
-start_api.bat
-
-# Терминал 2
-start_dashboard.bat
+git clone https://github.com/chrizantona/timeseries.git
+cd timeseries/service
 ```
 
----
+**Шаг 2.** Создать виртуальное окружение:
 
-### Вариант 4: вручную
+Windows:
+```bash
+python -m venv .venv
+.venv\Scripts\activate
+```
+
+Linux/macOS:
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+```
+
+**Шаг 3.** Установить зависимости:
 
 ```bash
-# Создать виртуальное окружение
-python -m venv .venv
-source .venv/bin/activate        # Linux/macOS
-# .venv\Scripts\activate         # Windows
-
-# Установить зависимости
 pip install -r requirements.txt
+```
 
-# Скопировать конфигурацию
-cp .env.example .env             # Linux/macOS
-# copy .env.example .env         # Windows
+**Шаг 4.** Настроить окружение:
 
-# Терминал 1 — API
+```bash
+copy .env.example .env   # Windows
+cp .env.example .env     # Linux/macOS
+```
+
+При необходимости отредактировать `.env` — подробнее в разделе [Конфигурация](#конфигурация).
+
+**Шаг 5.** Запустить API (Терминал 1):
+
+```bash
 uvicorn src.api.app:app --reload --host 0.0.0.0 --port 8000
+```
 
-# Терминал 2 — Dashboard
+В терминале появится:
+```
+INFO:     Uvicorn running on http://0.0.0.0:8000
+INFO:     Application startup complete.
+```
+
+**Шаг 6.** Запустить Dashboard (Терминал 2, новый):
+
+```bash
 streamlit run dashboard/streamlit_app.py
 ```
 
+В терминале появится:
+```
+You can now view your Streamlit app in your browser.
+Local URL: http://localhost:8501
+```
+
+**Шаг 7.** Открыть в браузере:
+
+- Dashboard: http://localhost:8501
+- API Docs: http://localhost:8000/docs
+
 ---
 
-### Проверка после запуска
+### Проверка установки
+
+Проверить API:
 
 ```bash
 curl http://localhost:8000/health
@@ -291,17 +364,77 @@ curl http://localhost:8000/health
 ```json
 {
   "status": "ok",
-  "timestamp": "...",
+  "timestamp": "2026-04-08T...",
   "models_loaded": true,
   "database_connected": true
 }
 ```
 
-Адреса:
+Проверить Dashboard: открыть http://localhost:8501 — должна загрузиться страница с градиентным фоном.
 
-- **Dashboard**: http://localhost:8501
-- **API**: http://localhost:8000
-- **API Docs**: http://localhost:8000/docs
+Запустить тесты:
+
+```bash
+pytest tests/ -v
+```
+
+Все тесты должны пройти.
+
+---
+
+### Проверка работоспособности через API
+
+Health check:
+
+```bash
+curl http://localhost:8000/health
+```
+
+Тест прогноза:
+
+```bash
+curl -X POST http://localhost:8000/forecast/predict \
+  -H "Content-Type: application/json" \
+  -d '{
+    "route_id": 105,
+    "office_from_id": 42,
+    "timestamp": "2026-04-10T11:00:00",
+    "status_1": 18,
+    "status_2": 11,
+    "status_3": 9,
+    "status_4": 6,
+    "status_5": 5,
+    "status_6": 4,
+    "status_7": 3,
+    "status_8": 2
+  }'
+```
+
+Должен вернуть прогноз с confidence.
+
+Тест полного pipeline:
+
+```bash
+curl -X POST http://localhost:8000/plan/dispatch \
+  -H "Content-Type: application/json" \
+  -d '{
+    "route_id": 105,
+    "office_from_id": 42,
+    "timestamp": "2026-04-10T11:00:00",
+    "status_1": 18,
+    "status_2": 11,
+    "status_3": 9,
+    "status_4": 6,
+    "status_5": 5,
+    "status_6": 4,
+    "status_7": 3,
+    "status_8": 2,
+    "vehicle_capacity": 5,
+    "already_ordered": 1
+  }'
+```
+
+Должен вернуть полный план с объяснениями.
 
 ---
 
@@ -310,6 +443,27 @@ curl http://localhost:8000/health
 ```bash
 pip install rich
 python demo.py
+```
+
+---
+
+### Полезные команды Docker
+
+```bash
+# Просмотр логов всех сервисов
+docker-compose logs -f
+
+# Логи только API
+docker-compose logs -f api
+
+# Логи только Dashboard
+docker-compose logs -f dashboard
+
+# Перезапуск
+docker-compose restart
+
+# Пересборка после изменений кода
+docker-compose up --build
 ```
 
 ---

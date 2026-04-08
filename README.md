@@ -46,26 +46,6 @@ Direct-прогнозирование `target_2h` по panel time series. Отд
 - Blend из `LightGBM + daily naive + weekly naive`
 - Логирование `overall / per-horizon` метрик, feature importance и runtime
 
-### Запуск обучения
-
-Установить зависимости и обучить модели:
-
-```bash
-python -m pip install -r requirements.txt
-
-python train.py \
-  --models-dir models/final \
-  --outputs-dir outputs/final \
-  --submission-path outputs/final/submission_from_train.csv
-```
-
-Отдельный инференс по сохранённым моделям:
-
-```bash
-python infer.py \
-  --models-dir models/final \
-  --submission-path submission.csv
-```
 
 ### Признаки
 

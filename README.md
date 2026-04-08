@@ -173,7 +173,7 @@ outputs/final/
 ## Структура проекта
 
 ```
-transport-dispatch-service/
+service/
 ├── requirements.txt
 ├── .env.example
 ├── docker-compose.yml
@@ -219,7 +219,7 @@ transport-dispatch-service/
 
 ---
 
-### Способ 1: быстрый запуск (Windows)
+### Способ 1: быстрый запуск (если есть streamlit на Windows)
 
 **Шаг 1.** Клонировать репозиторий:
 
